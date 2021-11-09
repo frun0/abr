@@ -1,10 +1,10 @@
-use crate::{AbrInput, AbrCircuitInput, AbrCircuitValue};
+use crate::{AbrCircuitInput, AbrCircuitValue, AbrInput};
 use bellman::{
     gadgets::{
         boolean::{AllocatedBit, Boolean},
         multipack,
     },
-    SynthesisError, ConstraintSystem
+    ConstraintSystem, SynthesisError,
 };
 use ff::PrimeField;
 
@@ -36,8 +36,7 @@ impl<const LEN: usize> AbrCircuitInput for [u8; LEN] {
         } else {
             vec![None; LEN * 8]
         };
-        bits
-            .into_iter()
+        bits.into_iter()
             .enumerate()
             // Allocate each bit.
             .map(|(i, b)| AllocatedBit::alloc(cs.namespace(|| format!("preimage bit {}", i)), b))

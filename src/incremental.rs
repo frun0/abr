@@ -278,17 +278,35 @@ mod tests {
         let left_comp = Sha256::compress(&input, &default);
         let input_comp = Sha256::compress(&input, &input);
 
-        assert_eq!(tree.root(), Sha256::combine(&default_comp, &default_comp, &default));
+        assert_eq!(
+            tree.root(),
+            Sha256::combine(&default_comp, &default_comp, &default)
+        );
         tree.push(input).unwrap();
-        assert_eq!(tree.root(), Sha256::combine(&left_comp, &default_comp, &default));
+        assert_eq!(
+            tree.root(),
+            Sha256::combine(&left_comp, &default_comp, &default)
+        );
         tree.push(input).unwrap();
-        assert_eq!(tree.root(), Sha256::combine(&input_comp, &default_comp, &default));
+        assert_eq!(
+            tree.root(),
+            Sha256::combine(&input_comp, &default_comp, &default)
+        );
         tree.push(input).unwrap();
-        assert_eq!(tree.root(), Sha256::combine(&input_comp, &left_comp, &default));
+        assert_eq!(
+            tree.root(),
+            Sha256::combine(&input_comp, &left_comp, &default)
+        );
         tree.push(input).unwrap();
-        assert_eq!(tree.root(), Sha256::combine(&input_comp, &input_comp, &default));
+        assert_eq!(
+            tree.root(),
+            Sha256::combine(&input_comp, &input_comp, &default)
+        );
         tree.push(input).unwrap();
-        assert_eq!(tree.root(), Sha256::combine(&input_comp, &input_comp, &input));
+        assert_eq!(
+            tree.root(),
+            Sha256::combine(&input_comp, &input_comp, &input)
+        );
 
         assert!(tree.push(input).is_err());
     }
