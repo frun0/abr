@@ -78,25 +78,21 @@ pub fn abr<H: Compressor, const HEIGHT: u32>(data: &[H::T]) -> H::T {
     assert!(HEIGHT > 0);
     assert_eq!(3 * 2_usize.pow(HEIGHT - 1) - 1, data.len());
 
-    // Store interim results, index signifies height of result
-    let mut interim = vec![None; HEIGHT as usize - 1];
+    let mut stack = Vec::with_capacity(HEIGHT as usize - 1);
     let mut inputs = data.iter();
-
     let mut acc = H::T::default();
     // Iterate outputs of leaf layer
-    for _ in 0..2_usize.pow(HEIGHT - 1) {
+    for i in 0..2_usize.pow(HEIGHT - 1) {
         acc = H::compress(inputs.next().unwrap(), inputs.next().unwrap());
-        // Traverse towards root as long as there are interim results to combine with
-        for h in 0..HEIGHT as usize - 1 {
-            if let Some(val) = &interim[h] {
-                acc = H::combine(val, &acc, inputs.next().unwrap());
-                interim[h] = None;
-            } else {
-                // Save interim result if no further values remain
-                interim[h] = Some(acc.clone());
-                break;
-            }
+        // Traverse towards root as long as we are looking at a right input.
+        for _ in std::iter::successors(Some(i), |prev| Some(prev / 2)).take_while(|n| n % 2 == 1) {
+            acc = H::combine(
+                &stack.pop().expect("Empty stack"),
+                &acc,
+                inputs.next().unwrap(),
+            );
         }
+        stack.push(acc.clone());
     }
     acc
 }
@@ -137,7 +133,7 @@ impl<Scalar: PrimeField, H: CompressorCircuit, const HEIGHT: u32> Circuit<Scalar
         let alloced = self.alloc(cs.namespace(|| "alloc input"))?;
         let mut inputs = alloced.iter();
         // Store interim results, index signifies height of result
-        let mut interim = vec![None; HEIGHT as usize - 1];
+        let mut stack = Vec::with_capacity(HEIGHT as usize - 1);
         // Initialization value is unused
         let mut acc = alloced[0].clone();
 
@@ -149,21 +145,17 @@ impl<Scalar: PrimeField, H: CompressorCircuit, const HEIGHT: u32> Circuit<Scalar
                 inputs.next().unwrap(),
             )?;
             // Traverse towards root as long as there are interim results to combine with
-            for h in 0..HEIGHT as usize - 1 {
-                if let Some(val) = &interim[h] {
-                    acc = H::combine_circuit(
-                        cs.namespace(|| format!("combine {}th node at height {}", i, h)),
-                        &val,
-                        &acc,
-                        inputs.next().unwrap(),
-                    )?;
-                    interim[h] = None;
-                } else {
-                    // Save interim result if no further values remain
-                    interim[h] = Some(acc.clone());
-                    break;
-                }
+            for h in
+                std::iter::successors(Some(i), |prev| Some(prev / 2)).take_while(|n| n % 2 == 1)
+            {
+                acc = H::combine_circuit(
+                    cs.namespace(|| format!("combine {}th node at height {}", i, h)),
+                    &stack.pop().expect("Empty stack"),
+                    &acc,
+                    inputs.next().unwrap(),
+                )?;
             }
+            stack.push(acc.clone());
         }
 
         // Expose the vector of boolean variables as input
@@ -213,7 +205,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn sha256_height_4_proof() {
         const BLOCK_SIZE: usize = 32;
         const BYTE_VAL: u8 = 161;
