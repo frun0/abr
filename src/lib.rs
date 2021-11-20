@@ -6,31 +6,28 @@ mod util;
 pub use incremental::{AbrMembership, IncrementalAbr, IncrementalTree, MembershipProof};
 pub use inputs::*;
 
-use bellman::{Circuit, ConstraintSystem, SynthesisError};
+use bellperson::{Circuit, ConstraintSystem, SynthesisError};
 use ff::PrimeField;
 
 pub trait AbrInput: Clone {
     fn mix(&self, right: &Self) -> Self;
 }
 
-pub trait AbrCircuitInput: AbrInput {
-    type P: AbrCircuitValue;
+pub trait AbrCircuitInput<Scalar: PrimeField>: AbrInput {
+    type P: AbrCircuitValue<Scalar>;
 
-    fn alloc<Scalar, CS>(cs: CS, from: Option<Self>) -> Result<Self::P, SynthesisError>
+    fn alloc<CS>(cs: CS, from: Option<Self>) -> Result<Self::P, SynthesisError>
     where
-        Scalar: PrimeField,
         CS: ConstraintSystem<Scalar>;
 }
 
-pub trait AbrCircuitValue: Clone {
-    fn mix_circuit<Scalar, CS>(&self, cs: CS, right: &Self) -> Result<Self, SynthesisError>
+pub trait AbrCircuitValue<Scalar: PrimeField>: Clone {
+    fn mix_circuit<CS>(&self, cs: CS, right: &Self) -> Result<Self, SynthesisError>
     where
-        Scalar: PrimeField,
         CS: ConstraintSystem<Scalar>;
 
-    fn inputize<Scalar, CS>(&self, cs: CS) -> Result<(), SynthesisError>
+    fn inputize<CS>(&self, cs: CS) -> Result<(), SynthesisError>
     where
-        Scalar: PrimeField,
         CS: ConstraintSystem<Scalar>;
 }
 
@@ -44,26 +41,30 @@ pub trait Compressor {
     }
 }
 
-pub trait CompressorCircuit {
-    type I: AbrCircuitInput;
+pub trait CompressorCircuit<Scalar: PrimeField> {
+    type I: AbrCircuitInput<Scalar>;
 
-    fn compress_circuit<Scalar, CS>(
+    fn compress_circuit<CS>(
         cs: CS,
-        left: &<<Self as CompressorCircuit>::I as AbrCircuitInput>::P,
-        right: &<<Self as CompressorCircuit>::I as AbrCircuitInput>::P,
-    ) -> Result<<<Self as CompressorCircuit>::I as AbrCircuitInput>::P, SynthesisError>
+        left: &<<Self as CompressorCircuit<Scalar>>::I as AbrCircuitInput<Scalar>>::P,
+        right: &<<Self as CompressorCircuit<Scalar>>::I as AbrCircuitInput<Scalar>>::P,
+    ) -> Result<
+        <<Self as CompressorCircuit<Scalar>>::I as AbrCircuitInput<Scalar>>::P,
+        SynthesisError,
+    >
     where
-        Scalar: PrimeField,
         CS: ConstraintSystem<Scalar>;
 
-    fn combine_circuit<Scalar, CS>(
+    fn combine_circuit<CS>(
         mut cs: CS,
-        left: &<<Self as CompressorCircuit>::I as AbrCircuitInput>::P,
-        right: &<<Self as CompressorCircuit>::I as AbrCircuitInput>::P,
-        inner: &<<Self as CompressorCircuit>::I as AbrCircuitInput>::P,
-    ) -> Result<<<Self as CompressorCircuit>::I as AbrCircuitInput>::P, SynthesisError>
+        left: &<<Self as CompressorCircuit<Scalar>>::I as AbrCircuitInput<Scalar>>::P,
+        right: &<<Self as CompressorCircuit<Scalar>>::I as AbrCircuitInput<Scalar>>::P,
+        inner: &<<Self as CompressorCircuit<Scalar>>::I as AbrCircuitInput<Scalar>>::P,
+    ) -> Result<
+        <<Self as CompressorCircuit<Scalar>>::I as AbrCircuitInput<Scalar>>::P,
+        SynthesisError,
+    >
     where
-        Scalar: PrimeField,
         CS: ConstraintSystem<Scalar>,
     {
         let l = left.mix_circuit(cs.namespace(|| "mix left and inner"), inner)?;
@@ -97,17 +98,21 @@ pub fn abr<H: Compressor, const HEIGHT: u32>(data: &[H::T]) -> H::T {
     acc
 }
 
-pub struct AbrCircuit<H: CompressorCircuit, const HEIGHT: u32> {
+pub struct AbrCircuit<Scalar: PrimeField, H: CompressorCircuit<Scalar>, const HEIGHT: u32> {
     preimage: Option<Vec<H::I>>,
 }
 
-impl<H: CompressorCircuit, const HEIGHT: u32> AbrCircuit<H, HEIGHT> {
-    fn alloc<CS, Scalar>(
+impl<Scalar: PrimeField, H: CompressorCircuit<Scalar>, const HEIGHT: u32>
+    AbrCircuit<Scalar, H, HEIGHT>
+{
+    fn alloc<CS>(
         self,
         mut cs: CS,
-    ) -> Result<Vec<<<H as CompressorCircuit>::I as AbrCircuitInput>::P>, SynthesisError>
+    ) -> Result<
+        Vec<<<H as CompressorCircuit<Scalar>>::I as AbrCircuitInput<Scalar>>::P>,
+        SynthesisError,
+    >
     where
-        Scalar: PrimeField,
         CS: ConstraintSystem<Scalar>,
     {
         // Allocate the values of the preimage. When verifying a proof,
@@ -126,8 +131,8 @@ impl<H: CompressorCircuit, const HEIGHT: u32> AbrCircuit<H, HEIGHT> {
     }
 }
 
-impl<Scalar: PrimeField, H: CompressorCircuit, const HEIGHT: u32> Circuit<Scalar>
-    for AbrCircuit<H, HEIGHT>
+impl<Scalar: PrimeField, H: CompressorCircuit<Scalar>, const HEIGHT: u32> Circuit<Scalar>
+    for AbrCircuit<Scalar, H, HEIGHT>
 {
     fn synthesize<CS: ConstraintSystem<Scalar>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
         let alloced = self.alloc(cs.namespace(|| "alloc input"))?;
@@ -158,17 +163,16 @@ impl<Scalar: PrimeField, H: CompressorCircuit, const HEIGHT: u32> Circuit<Scalar
             stack.push(acc.clone());
         }
 
-        // Expose the vector of boolean variables as input
-        acc.inputize(cs.namespace(|| "pack hash"))
+        acc.inputize(cs.namespace(|| "expose hash"))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bellman::{gadgets::multipack, groth16};
-    use bls12_381::Bls12;
-    use rand::rngs::OsRng;
+    use bellperson::{gadgets::multipack, gadgets::test::TestConstraintSystem};
+    use bls12_381::Scalar;
+    use neptune::Poseidon;
     use sha2::{digest::Digest, Sha256};
 
     #[test]
@@ -210,30 +214,46 @@ mod tests {
         const BYTE_VAL: u8 = 161;
         const HEIGHT: u32 = 4;
         let preimage = vec![[BYTE_VAL; BLOCK_SIZE]; 3 * 2_usize.pow(HEIGHT - 1) - 1];
-        let params = {
-            let c = AbrCircuit::<Sha256, HEIGHT> { preimage: None };
-            groth16::generate_random_parameters::<Bls12, _, _>(c, &mut OsRng).unwrap()
-        };
 
-        // Prepare the verification key (for proof verification).
-        let pvk = groth16::prepare_verifying_key(&params.vk);
-
-        // Pick a preimage and compute its hash.
         let hash = abr::<Sha256, HEIGHT>(&preimage);
 
-        // Create an instance of our circuit (with the preimage as a witness).
-        let c = AbrCircuit::<Sha256, HEIGHT> {
+        let c = AbrCircuit::<Scalar, Sha256, HEIGHT> {
             preimage: Some(preimage),
         };
-
-        // Create a Groth16 proof with our parameters.
-        let proof = groth16::create_random_proof(c, &params, &mut OsRng).unwrap();
-
         // Pack the hash as inputs for proof verification.
         let hash_bits = multipack::bytes_to_bits_le(&hash);
         let inputs = multipack::compute_multipacking(&hash_bits);
 
+        let mut cs = TestConstraintSystem::new();
+        c.synthesize(&mut cs).expect("failed synthesis");
+        if let Some(s) = cs.which_is_unsatisfied() {
+            panic!("failed to satisfy: {:?}", s);
+        }
+
         // Check the proof!
-        assert!(groth16::verify_proof(&pvk, &proof, &inputs).is_ok());
+        assert!(cs.verify(&inputs), "verification failed");
+    }
+
+    #[test]
+    fn poseidon_height_4_proof() {
+        const VAL: NumericInput<Scalar> = NumericInput(Scalar::one().double().double());
+        const HEIGHT: u32 = 4;
+        let preimage = vec![VAL; 3 * 2_usize.pow(HEIGHT - 1) - 1];
+
+        let hash = abr::<Poseidon<_>, HEIGHT>(&preimage).0;
+        let inputs = [hash];
+
+        let c = AbrCircuit::<Scalar, Poseidon<_>, HEIGHT> {
+            preimage: Some(preimage),
+        };
+
+        let mut cs = TestConstraintSystem::new();
+        c.synthesize(&mut cs).expect("failed synthesis");
+        if let Some(s) = cs.which_is_unsatisfied() {
+            panic!("failed to satisfy: {:?}", s);
+        }
+
+        // Check the proof!
+        assert!(cs.verify(&inputs), "verification failed");
     }
 }

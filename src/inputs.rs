@@ -1,8 +1,9 @@
 use crate::{AbrCircuitInput, AbrCircuitValue, AbrInput};
-use bellman::{
+use bellperson::{
     gadgets::{
         boolean::{AllocatedBit, Boolean},
         multipack,
+        num::AllocatedNum,
     },
     ConstraintSystem, SynthesisError,
 };
@@ -18,12 +19,11 @@ impl<const LEN: usize> AbrInput for [u8; LEN] {
     }
 }
 
-impl<const LEN: usize> AbrCircuitInput for [u8; LEN] {
+impl<Scalar: PrimeField, const LEN: usize> AbrCircuitInput<Scalar> for [u8; LEN] {
     type P = Vec<Boolean>;
 
-    fn alloc<Scalar, CS>(mut cs: CS, from: Option<Self>) -> Result<Self::P, SynthesisError>
+    fn alloc<CS>(mut cs: CS, from: Option<Self>) -> Result<Self::P, SynthesisError>
     where
-        Scalar: PrimeField,
         CS: ConstraintSystem<Scalar>,
     {
         let bits = if let Some(data) = from {
@@ -45,10 +45,9 @@ impl<const LEN: usize> AbrCircuitInput for [u8; LEN] {
     }
 }
 
-impl AbrCircuitValue for Vec<Boolean> {
-    fn mix_circuit<Scalar, CS>(&self, mut cs: CS, right: &Self) -> Result<Self, SynthesisError>
+impl<Scalar: PrimeField> AbrCircuitValue<Scalar> for Vec<Boolean> {
+    fn mix_circuit<CS>(&self, mut cs: CS, right: &Self) -> Result<Self, SynthesisError>
     where
-        Scalar: PrimeField,
         CS: ConstraintSystem<Scalar>,
     {
         assert_eq!(self.len(), right.len());
@@ -58,11 +57,63 @@ impl AbrCircuitValue for Vec<Boolean> {
             .map(|(i, (l, r))| Boolean::xor(cs.namespace(|| format!("XOR bit {}", i)), l, r))
             .collect()
     }
-    fn inputize<Scalar, CS>(&self, mut cs: CS) -> Result<(), SynthesisError>
+    fn inputize<CS: ConstraintSystem<Scalar>>(&self, mut cs: CS) -> Result<(), SynthesisError> {
+        multipack::pack_into_inputs(cs.namespace(|| "pack hash"), self)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NumericInput<Scalar>(pub Scalar);
+
+impl<Scalar: PrimeField> Default for NumericInput<Scalar> {
+    fn default() -> Self {
+        NumericInput(Scalar::zero())
+    }
+}
+
+impl<Scalar: PrimeField> AbrInput for NumericInput<Scalar> {
+    fn mix(&self, right: &NumericInput<Scalar>) -> NumericInput<Scalar> {
+        NumericInput(self.0 + right.0)
+    }
+}
+
+impl<Scalar: PrimeField> AbrCircuitInput<Scalar> for NumericInput<Scalar> {
+    type P = AllocatedNum<Scalar>;
+
+    fn alloc<CS>(mut cs: CS, from: Option<Self>) -> Result<Self::P, SynthesisError>
     where
-        Scalar: PrimeField,
         CS: ConstraintSystem<Scalar>,
     {
-        multipack::pack_into_inputs(cs.namespace(|| "pack hash"), self)
+        AllocatedNum::alloc(cs.namespace(|| "alloc num"), || {
+            Ok(from.ok_or(SynthesisError::AssignmentMissing)?.0)
+        })
+    }
+}
+
+impl<Scalar: PrimeField> AbrCircuitValue<Scalar> for AllocatedNum<Scalar> {
+    fn mix_circuit<CS: ConstraintSystem<Scalar>>(
+        &self,
+        mut cs: CS,
+        right: &Self,
+    ) -> Result<Self, SynthesisError> {
+        let new = AllocatedNum::alloc(cs.namespace(|| "sum num"), || {
+            let mut tmp = self.get_value().ok_or(SynthesisError::AssignmentMissing)?;
+            tmp.add_assign(right.get_value().ok_or(SynthesisError::AssignmentMissing)?);
+
+            Ok(tmp)
+        })?;
+
+        // Constrain: a + b = a + b
+        cs.enforce(
+            || "addition constraint",
+            |lc| lc + self.get_variable() + right.get_variable(),
+            |lc| lc + CS::one(),
+            |lc| lc + new.get_variable(),
+        );
+
+        Ok(new)
+    }
+    fn inputize<CS: ConstraintSystem<Scalar>>(&self, mut cs: CS) -> Result<(), SynthesisError> {
+        self.inputize(cs.namespace(|| "inputize hash"))
     }
 }
